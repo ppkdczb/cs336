@@ -3,14 +3,34 @@ import os
 from pyexpat import model
 from idna import encode
 import regex as re
+import multiprocessing
 from pydantic import BaseModel
 
-from pretokenization_example import find_chunk_boundaries
+from .pretokenization_example import find_chunk_boundaries
 
 class TokenizerConfig(BaseModel):
     vocab: list[bytes]
     merges: list[tuple[bytes, bytes]]
     special_tokens: list[str]
+
+
+def _count_pretokens_range(args: tuple[str, int, int, str, str]) -> dict[tuple[bytes], int]:
+    input_path, start, end, pat, split_pattern = args
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start)
+    text = chunk.decode("utf-8", errors="ignore")
+    if split_pattern:
+        segments = re.split(split_pattern, text)
+    else:
+        segments = [text]
+    counts: dict[tuple[bytes], int] = {}
+    for segment in segments:
+        for match in re.finditer(pat, segment):
+            token = match.group(0).encode("utf-8")
+            tuples = tuple(token[i : i + 1] for i in range(len(token)))
+            counts[tuples] = counts.get(tuples, 0) + 1
+    return counts
 
 class bpeTokenizer:
 
@@ -23,26 +43,6 @@ class bpeTokenizer:
         self.vocab = {}  # dict[int, bytes]
         self.special_tokens = []  # list[str]
     # print(merge_bytes(b'he', b'llo'))
-    def set_bpe_tokenizer(
-        self,
-        vocab: dict[int, bytes],
-        merges: list[tuple[bytes, bytes]],
-        special_tokens: list[str],
-    ) -> None:
-        """Set the BPE tokenizer's vocabulary and merges.
-
-        Args:
-            vocab (dict[int, bytes]): The tokenizer vocabulary, a mapping from int (token ID in the vocabulary)
-                to bytes (token bytes)
-            merges (list[tuple[bytes, bytes]]): BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>.
-                Merges are ordered by order of creation.
-        """
-        self.vocab = vocab
-        self.merges = merges
-        self.special_tokens = special_tokens
-
-
     
     def merge_bytes(self, a: bytes, b: bytes) -> bytes:
         return a + b
@@ -93,21 +93,42 @@ class bpeTokenizer:
         n_special = len(special_tokens)
         import regex as re
 
-        with open(input_path, "rb") as f:
-            data = f.read()
-
-        strs = re.split("|".join(map(re.escape, special_tokens)), data.decode("utf-8"))
         for i in range(256):
             self.vocab[i] = bytes([i])
         for token in special_tokens:
             self.vocab[len(self.vocab)] = token.encode("utf-8")
 
-        for i in range(len(strs)):
-            finditer = re.finditer(PAT, strs[i])
-            for match in finditer:
-                token = match.group(0).encode("utf-8")
-                tuples = tuple([token[i : i + 1] for i in range(len(token))])
-                self.counts[tuples] = self.counts.get(tuples, 0) + 1
+        split_pattern = "|".join(map(re.escape, special_tokens)) if special_tokens else ""
+        num_processes = kwargs.get("num_processes", multiprocessing.cpu_count())
+        num_processes = max(1, int(num_processes))
+        with open(input_path, "rb") as f:
+            if special_tokens:
+                boundaries = find_chunk_boundaries(
+                    f, num_processes, special_tokens[0].encode("utf-8")
+                )
+            else:
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
+                boundaries = [0, file_size]
+            ranges = list(zip(boundaries[:-1], boundaries[1:]))
+
+        if len(ranges) == 1 or num_processes == 1:
+            start, end = ranges[0]
+            chunk_counts = _count_pretokens_range(
+                (str(input_path), start, end, PAT, split_pattern)
+            )
+            for token, count in chunk_counts.items():
+                self.counts[token] = self.counts.get(token, 0) + count
+        else:
+            args = [
+                (str(input_path), start, end, PAT, split_pattern)
+                for start, end in ranges
+            ]
+            with multiprocessing.Pool(processes=min(num_processes, len(args))) as pool:
+                partial_counts = pool.map(_count_pretokens_range, args)
+            for chunk_counts in partial_counts:
+                for token, count in chunk_counts.items():
+                    self.counts[token] = self.counts.get(token, 0) + count
 
         # initialize words_parent
         for word in self.counts.keys():
@@ -191,4 +212,3 @@ class bpeTokenizer:
                 self.counts[new_key] = self.counts.get(new_key, 0) + self.counts[key]
                 del self.counts[key]
         return self.vocab, self.merges
-
