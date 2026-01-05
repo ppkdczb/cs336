@@ -48,10 +48,11 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-
+input_path = "./data/TinyStoriesV2-GPT4-valid.txt"
 ## Usage
-with open(..., "rb") as f:
-    num_processes = 4
+flag = False
+with open(input_path, "rb") as f:
+    num_processes = 1000
     boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
     # The following is a serial implementation, but you can parallelize this
@@ -60,3 +61,6 @@ with open(..., "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         # Run pre-tokenization on your chunk and store the counts for each pre-token
+        if not flag:
+            print(chunk)
+            flag = True
