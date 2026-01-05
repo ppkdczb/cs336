@@ -15,7 +15,6 @@ charset-normalizer==3.4.3
 click==8.2.1
 cloudpickle==3.1.1
 comm==0.2.3
--e git+https://github.com/ppkdczb/cs336@700858ee4c9aa607d55d159b90130e82ca8c0082#egg=cs336_basics
 debugpy==1.8.17
 decorator==5.2.1
 defusedxml==0.7.1
