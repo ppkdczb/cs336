@@ -63,11 +63,11 @@ class tokenizer:
     
  
     def encode_single(self, text: str) -> List[int]:
-        s = text.encode('utf-8')
-        int_list = list(s)
-        new_str_list = [self.bytes_to_unicode_map[b] for b in int_list] # list of str
-        bytes_list = [c.encode('utf-8') for c in new_str_list] # list of bytes
-        #bytes_list = [s[i:i+1] for i in range(len(s))]  # list of bytes, 不使用 bytes_to_unicode_map
+        s = text.encode('utf-8') # 该词汇的原始bytes流
+        #int_list = list(s)
+        #new_str_list = [self.bytes_to_unicode_map[b] for b in int_list] # list of str
+        #bytes_list = [c.encode('utf-8') for c in new_str_list] # list of bytes
+        bytes_list = [s[i:i+1] for i in range(len(s))]  # list of bytes, 不使用 bytes_to_unicode_map
         for merge in self.merges:
             i = 0
             new_s = []
@@ -129,19 +129,14 @@ class tokenizer:
         :param iterable: 迭代器
         :return: 迭代器
         '''
+        pass
         for text in iterable:
             yield self.encode(text)
 
     def decode(self, ids: List[int]) -> str:
-        str_list = []
-        for token_int in ids:
-            token_bytes = self.vocab.get(token_int)
-            token_str = token_bytes.decode('utf-8')
-            origin_token_list = [chr(self.unicode_to_bytes_map[c]) for c in token_str]
-            origin_token = ''.join(origin_token_list)
-            str_list.append(origin_token)
-            #str_list.append(token_str)
-        return ''.join(str_list)
-
+        bytes_list = [self.vocab[id] for id in ids] 
+        bytes_steeam = bytes(b''.join(bytes_list))
+        decoded_str = bytes_steeam.decode('utf-8', errors='ignore')
+        return decoded_str
 
     
