@@ -1,17 +1,65 @@
 from ast import Dict
+from math import e
 import os
 from pyexpat import model
 from idna import encode
 import regex as re
 import multiprocessing
 from pydantic import BaseModel
+from typing import List, Optional, Dict
+from typing import BinaryIO
+import time
 
-from .pretokenization_example import find_chunk_boundaries
+def find_chunk_boundaries(
+    file: BinaryIO,
+    desired_num_chunks: int,
+    split_special_token: bytes,
+) -> list[int]:
+    """
+    Chunk the file into parts that can be counted independently.
+    May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+
+    for bi in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[bi]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[bi] = file_size
+                break
+
+            # Find the special token in the mini chunk
+            found_at = mini_chunk.find(split_special_token)
+            if found_at != -1:
+                chunk_boundaries[bi] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
 
 class TokenizerConfig(BaseModel):
     vocab: list[bytes]
     merges: list[tuple[bytes, bytes]]
-    special_tokens: list[str]
+    special_tokens: Optional[list[str]] = None
 
 
 def _count_pretokens_range(args: tuple[str, int, int, str, str]) -> dict[tuple[bytes], int]:
@@ -84,7 +132,11 @@ class bpeTokenizer:
                     representing that <token1> was merged with <token2>.
                     Merges are ordered by order of creation.
         """
-
+        print("Starting BPE training...")
+        self.special_tokens = special_tokens
+        
+        print(f"Reading data from {input_path}...")
+        start_time = time.time()
         # input_path: ../data/TinyStoriesV2-GPT4-valid.txt
         # input_path = "../data/TinyStoriesV2-GPT4-valid.txt"
         PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -101,6 +153,7 @@ class bpeTokenizer:
         split_pattern = "|".join(map(re.escape, special_tokens)) if special_tokens else ""
         num_processes = kwargs.get("num_processes", multiprocessing.cpu_count())
         num_processes = max(1, int(num_processes))
+
         with open(input_path, "rb") as f:
             if special_tokens:
                 boundaries = find_chunk_boundaries(
@@ -129,7 +182,10 @@ class bpeTokenizer:
             for chunk_counts in partial_counts:
                 for token, count in chunk_counts.items():
                     self.counts[token] = self.counts.get(token, 0) + count
-
+        end_time = time.time()
+        print(f"Data read and pre-tokenized in {end_time - start_time:.2f} seconds.")
+        start_time = time.time()
+        print("Starting BPE merges...")
         # initialize words_parent
         for word in self.counts.keys():
             self.words_parent[word] = word
@@ -147,7 +203,7 @@ class bpeTokenizer:
                     self.parts_to_words[pair].append(key)
         round = vocab_size - 256 - n_special
         for _ in range(round):
-            print(f"Round {_+1}/{round}")
+            #print(f"Round {_+1}/{round}")
             pair_max = max(self.pair_counts.items(), key=lambda x: (x[1], x[0]))
             self.merges.append(pair_max[0])
             new_bytes = self.merge_bytes(pair_max[0][0], pair_max[0][1])
@@ -211,4 +267,7 @@ class bpeTokenizer:
                 self.parts_to_words.setdefault((new_bytes,), []).append(new_key)
                 self.counts[new_key] = self.counts.get(new_key, 0) + self.counts[key]
                 del self.counts[key]
+        end_time = time.time()
+        print(f"BPE merges completed in {end_time - start_time:.2f} seconds.")
         return self.vocab, self.merges
+    
