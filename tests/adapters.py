@@ -10,7 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from cs336_basics.bpe.bpe import bpeTokenizer
 from cs336_basics.bpe.tokenizer import tokenizer
-
+from cs336_basics.transformers.utils import linear, embedding, RMSNorm, SiLU, SwiGLU_FFN, RoPE
 def run_linear(
     d_in: int,
     d_out: int,
@@ -29,8 +29,9 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    linear_func = linear(d_in, d_out)
+    linear_func.load_state_dict({"W": weights})
+    return linear_func(in_features)
 
 
 def run_embedding(
@@ -52,7 +53,9 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    embedding_func = embedding(vocab_size, d_model)
+    embedding_func.load_state_dict({"weight": weights})
+    return embedding_func(token_ids)
 
 
 def run_swiglu(
@@ -84,7 +87,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu_func = SwiGLU_FFN(d_model)
+    #swiglu_func.load_state_dict({"W1": w1_weight, "W2": w2_weight, "W3": w3_weight})
+    swiglu_func.W1.W.data = w1_weight
+    swiglu_func.W2.W.data = w2_weight
+    swiglu_func.W3.W.data = w3_weight
+    return swiglu_func(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -201,7 +209,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope_func = RoPE(theta, d_k, max_seq_len)
+    return rope_func(in_query_or_key)
 
 
 def run_transformer_block(
@@ -288,7 +297,9 @@ def run_transformer_lm(
     weights: dict[str, Tensor],
     in_indices: Int[Tensor, " batch_size sequence_length"],
 ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
-    """Given the weights of a Transformer language model and input indices,
+    
+    """
+    Given the weights of a Transformer language model and input indices,
     return the output of running a forward pass on the input indices.
 
     This function should use RoPE.
@@ -301,7 +312,7 @@ def run_transformer_lm(
         num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
-        rope_theta (float): The RoPE $\Theta$ parameter.
+        rope_theta (float): The RoPE $Theta$ parameter.
         weights (dict[str, Tensor]):
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
@@ -379,7 +390,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rmsnorm_func = RMSNorm(d_model, eps)
+    rmsnorm_func.load_state_dict({"weight": weights})
+    return rmsnorm_func(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -393,7 +406,8 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    silu_func = SiLU()
+    return silu_func(in_features)
 
 
 def run_get_batch(
