@@ -1,6 +1,7 @@
 from math import sqrt
-
-from sympy import Si
+from typing import Tuple
+from torch import Tensor
+from jaxtyping import Bool, Float, Int
 import torch
 import torch.nn as nn
 from torch.nn.init import trunc_normal_
@@ -98,3 +99,28 @@ class RoPE(nn.Module):
         repeat_cos = torch.repeat_interleave(emb_cos, repeats=2, dim=-1)
         repeat_sin = torch.repeat_interleave(emb_sin, repeats=2, dim=-1)
         return x * repeat_cos + x_rev * repeat_sin
+    
+def softmax(x, dim=-1):
+    x = x - torch.max(x, dim=dim, keepdim=True).values
+    exp_x = torch.exp(x)
+    sum_exp_x = torch.sum(exp_x, dim=dim, keepdim=True)
+    return exp_x / sum_exp_x
+
+
+def scaled_dot_product_attention(
+    Q, K, V,
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... d_out"]:
+    '''
+    Q: [b, ..., s, d_k]
+    K: [b, ..., s, d_k]
+    V: [b, ..., s, d_v]
+    '''
+    d_k = Q.shape[-1]
+    sqrt_d_k = sqrt(d_k)
+    scores = einsum(Q, K, 'b ... s1 d_k, b ... s2 d_k -> b ... s1 s2' ) / sqrt_d_k
+    if mask is not None:
+        scores = scores.masked_fill(mask == False, float('-inf'))
+    attn_weights = softmax(scores, dim=-1)
+    output = einsum(attn_weights, V, 'b ... s1 s2 , b ... s2 d_v -> b ... s1 d_v')
+    return output
