@@ -1,6 +1,10 @@
-from math import sqrt
-from typing import Tuple, Optional
-from torch import Tensor
+from calendar import c
+from itertools import accumulate
+from math import cos, sqrt
+from typing import Tuple, Optional, IO, Any, BinaryIO
+
+from sympy import content
+from torch import Tensor, ge
 from jaxtyping import Bool, Float, Int
 import torch
 import torch.nn as nn
@@ -8,6 +12,8 @@ from torch.nn.init import trunc_normal_
 from einops import einsum, rearrange, reduce, repeat
 import torch.nn.functional as F
 from collections.abc import Callable, Iterable
+from numpy import sort, typing as npt
+import os
 
 
 class linear(nn.Module):
@@ -41,7 +47,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.d_model = d_model
         self.weight = torch.nn.Parameter(
-            torch.empty((d_model,), device=device, dtype=dtype)
+            torch.ones((d_model,), device=device, dtype=dtype)
         )
 
     def forward(self, x):
@@ -338,6 +344,145 @@ class AdamW(torch.optim.Optimizer):
                 param.data -= lr * weight_decay * param.data
         return loss
 
+
+def get_lr_cosine_schedule(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    cosine_cycle_iters: int,
+):
+    if it < warmup_iters:
+        return max_learning_rate * it / warmup_iters
+    elif it >= warmup_iters and it <= cosine_cycle_iters:
+        lr = (
+            min_learning_rate
+            + (max_learning_rate - min_learning_rate)
+            * (
+                1
+                + cos(
+                    (it - warmup_iters) / (cosine_cycle_iters - warmup_iters) * torch.pi
+                )
+            )
+            / 2
+        )
+        return lr
+    else:
+        return min_learning_rate
+
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    total_norm = 0.0
+    for p in parameters:
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+    total_norm = total_norm**0.5
+    torch
+    clip_coef = max_l2_norm / (total_norm + 1e-6)
+    if clip_coef < 1:
+        for p in parameters:
+            if p.grad is not None:
+                p.grad.data.mul_(clip_coef)
+
+
+def get_batch(
+    dataset: npt.NDArray, batch_size: int, context_length: int, device: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    starts = torch.randint(0, len(dataset) - context_length, (batch_size,))
+    x_batch = []
+    y_batch = []
+
+    for i in starts:
+        x_fragment = dataset[i : i + context_length]
+        y_fragment = dataset[i + 1 : i + context_length + 1]
+        x_batch.append(torch.from_numpy(x_fragment).long())
+        y_batch.append(torch.from_numpy(y_fragment).long())
+
+    x_batch = torch.stack(x_batch).to(device)
+    y_batch = torch.stack(y_batch).to(device)
+
+    return x_batch, y_batch
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    iteration: int,
+    out: str | os.PathLike | BinaryIO | IO[bytes],
+):
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'iteration': iteration,
+    }
+    torch.save(checkpoint, out)
+
+
+def load_checkpoint(
+    src: str | os.PathLike | BinaryIO | IO[bytes],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> int:
+
+    checkpoint = torch.load(src)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    iteration = checkpoint['iteration']
+    return iteration
+
+
+def sample_next_token(
+    logits: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0
+) -> int:
+    # logits:[vocab_size,]
+    if temperature == 0:
+        return torch.argmax(logits).item()
+    sorted_logits, sorted_indices = torch.sort(
+        logits, descending=True
+    )  # 对 logits 进行排序，得到排序后的 logits 和对应的索引
+    sorted_probs = softmax(sorted_logits / temperature, dim=-1)
+    scaled_logits = sorted_logits / temperature
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    indice_to_remove = cumulative_probs > top_p
+    indice_to_remove[1:] = indice_to_remove[
+        :-1
+    ].clone()  # 保留第一个超过 top_p 的 token
+    indice_to_remove[0] = False
+    scaled_logits[indice_to_remove] = float(
+        '-inf'
+    )  # 将不在 top_p 内的 token 的 logits 设置为 -inf
+    probs = softmax(scaled_logits, dim=-1)
+    next_token = torch.multinomial(probs, num_samples=1)
+
+    return sorted_indices[next_token].item()
+
+
+def decode(
+    model: transformer_lm,
+    prompt_token_ids: list[int],
+    end_token: int,
+    ctx: int,
+    device: str,
+    max_generated: int = 32768,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+):
+    #generated_ = []
+    tokens = prompt_token_ids[:]
+    model.eval()
+    with torch.no_grad():
+        for _ in range(max_generated):
+            x = torch.Tensor(tokens[-ctx:], dtype=torch.long, device=device).unsqueeze(0)
+            logits = model(x)  # [1, seq, vocab]
+            next_logits = logits[0, -1, :]
+
+            next_token_id = sample_next_token(next_logits, temperature, top_p)
+            #generated_.append(next_token_id)
+            tokens.append(next_token_id)
+            if next_token_id == end_token:
+                break
+    return tokens
 
 if __name__ == "__main__":
     weights = torch.nn.Parameter(5 * torch.randn((10, 10)))
